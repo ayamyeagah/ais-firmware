@@ -148,7 +148,11 @@ void printAsciiConfig(byte *config, int length)
     lcd.setCursor(6, 0);
     lcd.print(mmsi);
     lcd.setCursor(0, 1);
+    lcd.print("NAME:");
+    lcd.setCursor(6, 1);
     lcd.print(name);
-    lcd.setCursor(11, 1);
+    lcd.setCursor(0, 2);
+    lcd.print("C_SIGN:");
+    lcd.setCursor(8, 2);
     lcd.print(callsign);
 }
