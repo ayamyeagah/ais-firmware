@@ -1,125 +1,154 @@
 #include <Arduino.h>
+#include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <HardwareSerial.h>
-#include <AIS.h>
 
+#define RXD2 16
+#define TXD2 17
+
+const int baudRate = 115200;
+const char *password = "0000"; // Replace with your actual password
+
+HardwareSerial MySerial(2);
+
+// Set the LCD address to 0x27 for a 16 chars and 2 line display
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 
-HardwareSerial RSSerial(1);
-
-const int ledPin = 26;
-
-void printDegrees(long min4);
-void showMMSI(AIS &ais_msg);
-void showSOG(AIS &ais_msg);
-void showCOG(AIS &ais_msg);
-void showLatitude(AIS &ais_msg);
-void showLongitude(AIS &ais_msg);
+// Function declarations
+bool sendPassword(const char *password);
+void printConfig(byte *config, int length);
+void printAsciiConfig(byte *config, int length);
 
 void setup()
 {
-    Serial.begin(115200);
-    RSSerial.begin(9600, SERIAL_8N1, 16, 17);
+    Serial.begin(baudRate);
+    MySerial.begin(baudRate, SERIAL_8N1, RXD2, TXD2);
 
+    // Initialize the LCD
     lcd.init();
     lcd.backlight();
 
-    pinMode(ledPin, OUTPUT);
-    digitalWrite(ledPin, LOW);
+    delay(1000); // Allow some time for the serial connection to establish
 
-    lcd.setCursor(0, 0);
-    lcd.print("Waiting for data");
+    // Send initialization command with password
+    if (!sendPassword(password))
+    {
+        Serial.println("Could not initialize with password.");
+        while (true)
+            ; // Halt the program
+    }
+
+    // Send command to read config
+    byte readCommand[] = {0x51, 0x40}; // Assuming default length of 0x40
+    MySerial.write(readCommand, sizeof(readCommand));
+
+    delay(100);
+
+    // Read response
+    if (MySerial.available() > 0)
+    {
+        byte header[2];
+        MySerial.readBytes(header, 2);
+
+        if (header[0] == 0x25 && header[1] == 0x40)
+        {
+            byte config[0x40];
+            MySerial.readBytes(config, 0x40);
+            printConfig(config, 0x40);
+            printAsciiConfig(config, 0x40);
+        }
+        else
+        {
+            Serial.println("Could not read config.");
+        }
+    }
+    else
+    {
+        Serial.println("No response from device.");
+    }
 }
 
 void loop()
 {
-    if (RSSerial.available())
+    // Empty loop as all operations are done in setup
+}
+
+bool sendPassword(const char *password)
+{
+    byte passwordCommand[] = {0x59, 0x01, 0x42, 0x06}; // Command with length of 6
+    MySerial.write(passwordCommand, sizeof(passwordCommand));
+
+    // Prepare and send password bytes
+    char passwordBuffer[6] = {'0', '0', '0', '0', '0', '0'};
+    strncpy(passwordBuffer, password, 6);
+    MySerial.write((uint8_t *)passwordBuffer, 6);
+
+    delay(100);
+
+    // Read response
+    if (MySerial.available() > 0)
     {
-        String data = RSSerial.readStringUntil('\n');
-        data.trim();
+        byte response[2];
+        MySerial.readBytes(response, 2);
+        return response[0] == 0x95 && response[1] == 0x20;
+    }
+    return false;
+}
 
-        AIS ais_msg(data.c_str());
-        if (ais_msg.get_mmsi() != 0)
+void printConfig(byte *config, int length)
+{
+    Serial.println("Config Data:");
+    for (int i = 0; i < length; i++)
+    {
+        Serial.printf("0x%02x ", config[i]);
+        if ((i + 1) % 16 == 0)
         {
-            lcd.clear();
-            lcd.setCursor(0, 0);
-            lcd.print("Data received:");
-
-            showMMSI(ais_msg);
-            showSOG(ais_msg);
-            showCOG(ais_msg);
-            showLatitude(ais_msg);
-            showLongitude(ais_msg);
-
-            digitalWrite(ledPin, HIGH);
-            delay(500);
-            digitalWrite(ledPin, LOW);
-
-            Serial.println("Received: " + data);
-        }
-        else
-        {
-            Serial.println("Failed to decode AIS message");
+            Serial.println();
         }
     }
+    Serial.println();
 }
 
-void printDegrees(long min4)
+void printAsciiConfig(byte *config, int length)
 {
-    long intPart = min4 / 600000;
-    long fracPart = abs(min4 % 600000);
-    char frac[7];
-    sprintf(frac, "%06ld", fracPart);
-    Serial.print(intPart);
-    Serial.print(".");
-    Serial.print(frac);
-}
+    // Convert specific sections to ASCII strings
+    Serial.println("ASCII Representation:");
 
-void showMMSI(AIS &ais_msg)
-{
-    unsigned long mmsi = ais_msg.get_mmsi();
+    // MMSI (bytes 1-4)
+    int mmsi = config[1] + (config[2] << 8) + (config[3] << 16) + (config[4] << 24);
+    Serial.print("MMSI: ");
+    Serial.println(mmsi);
+
+    // Name (bytes 5-24)
+    Serial.print("Name: ");
+    char name[21];
+    for (int i = 5; i <= 24; i++)
+    {
+        Serial.print((char)config[i]);
+        name[i - 5] = config[i];
+    }
+    name[20] = '\0';
+    Serial.println();
+
+    // Call Sign (bytes 32-37, 6-bit encoding)
+    Serial.print("Call Sign: ");
+    char callsign[7];
+    for (int i = 32; i <= 37; i++)
+    {
+        Serial.print((char)((config[i] & 0x3F) + '0')); // Adjust the encoding as necessary
+        callsign[i - 32] = (char)((config[i] & 0x3F) + '0');
+    }
+    callsign[6] = '\0';
+    Serial.println();
+
+    // Display on LCD
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("MMSI:");
+    lcd.setCursor(6, 0);
+    lcd.print(mmsi);
     lcd.setCursor(0, 1);
-    lcd.print("MMSI: " + String(mmsi));
-    Serial.print("Returned MMSI: ");
-    Serial.print(mmsi);
-    Serial.print(" (");
-    Serial.print(mmsi, 16);
-    Serial.print(" )");
-    Serial.println("");
-}
-
-void showSOG(AIS &ais_msg)
-{
-    unsigned int SOG = ais_msg.get_SOG();
-    lcd.setCursor(0, 2);
-    lcd.print("SOG: " + String(SOG / 10.0, 1) + " nm");
-    Serial.print("Returned SOG: ");
-    Serial.print(SOG / 10.0);
-    Serial.println(" nm");
-}
-
-void showCOG(AIS &ais_msg)
-{
-    unsigned int COG = ais_msg.get_COG();
-    lcd.setCursor(0, 3);
-    lcd.print("COG: " + String(COG / 10.0, 1) + " deg");
-    Serial.print("Returned COG: ");
-    Serial.print(COG / 10.0);
-    Serial.println(" degrees");
-}
-
-void showLatitude(AIS &ais_msg)
-{
-    long LAT = ais_msg.get_latitude();
-    Serial.print("Returned LAT: ");
-    printDegrees(LAT);
-    Serial.println(" degrees");
-}
-
-void showLongitude(AIS &ais_msg)
-{
-    long LONG = ais_msg.get_longitude();
-    Serial.print("Returned LONG: ");
-    printDegrees(LONG);
-    Serial.println(" degrees");
+    lcd.print(name);
+    lcd.setCursor(11, 1);
+    lcd.print(callsign);
 }
